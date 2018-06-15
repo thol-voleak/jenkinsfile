@@ -1,0 +1,71 @@
+pipeline {
+  agent any
+    tools {
+        maven 'MAVEN_HOME'
+    }
+    environment {
+        PRO_NAME = 'partner-system-input-model'
+        APP_NAME = 'service-a'
+        IMG_NAME = 'psim'
+        DC_STATUS = 'is-require-psim-b-update'
+        BASE_ROUTE = 'psim'
+    }
+    stages{
+        stage('Checkout Production'){
+          steps{
+            script{
+              git branch: 'production',credentialsId: 'bitbucket-credential',url: 'https://kimchheng_kao_kh@bitbucket.org/ascendcorp/ami-kh-api-core_input_model.git'
+            }
+          }
+        }
+        stage('Build'){
+            steps{
+              sh "mvn clean install -DskipTests"
+            }
+        }
+        
+        stage('Smoke Test+Push'){
+            steps{
+              //sh "echo test"
+              sh "$OC login -u$OCP_USER_NAME -p$OCP_PWD --server=$OCP_SERVER --certificate-authority=$OCP_CERT_PATH"
+              script{
+                try{
+                  sh "$OC get project ${PRO_NAME}"
+                }catch(Exception ex) {
+                  sh "$OC new-project ${PRO_NAME}"
+                }
+              }
+              sh "mvn clean install docker:build docker:push"
+            }
+        }
+        
+        stage('Deployment'){ 
+            steps{ 
+              script{
+                sh "$OC project ${PRO_NAME}"
+                try{
+                  sh "$OC get svc ${APP_NAME}"
+                  sh '$OC set route-backends ${BASE_ROUTE} service-b=100 ${APP_NAME}=0'
+                  sh "$OC rollout latest dc/${APP_NAME} -n ${PRO_NAME}"
+                  sh "$OC rollout status dc/${APP_NAME}"
+                  sh '$OC set route-backends ${BASE_ROUTE} service-b=0 ${APP_NAME}=100'
+                }catch(Exception ex){
+                  sh "$OC new-app ${PRO_NAME}/${IMG_NAME}:latest --name=${APP_NAME}"
+                  sh "$OC expose svc/${APP_NAME} --hostname=${APP_NAME}-${IMG_NAME}.apps.$OCP_BASE_URL"
+                }
+              }
+            }
+        }
+    }
+    post { 
+        success{ 
+            //sh 'echo sucessed'
+            sh '$REDIS_CLI -h $REDIS_HOST SET $DC_STATUS Y'
+            slackSend (color: '#33ff36', message: "Sucessed built: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]\nView Report: (${env.BUILD_URL})\nTest URL: (http://${APP_NAME}-${IMG_NAME}.apps.$OCP_BASE_URL/ui)'")
+        }
+        failure {
+          //sh 'echo fail'
+          slackSend (color: '#ff9f33', message: "Failed build: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]\nView Report: (${env.BUILD_URL})'")
+        }
+    }
+}

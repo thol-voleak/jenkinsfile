@@ -1,0 +1,43 @@
+pipeline {
+    agent any
+    environment {
+        PRO_NAME = 'test-partner-system-input-model'
+        APP_NAME = 'service-b'
+        IMG_NAME = 'tpsim'
+        DC_STATUS = 'is-require-tpsim-b-update'
+        BASE_ROUTE = 'tpsim'
+    }
+    stages{
+        stage("Deployment") {
+            steps{
+                script{
+                    def isupdate = sh (script: '$REDIS_CLI -h $REDIS_HOST GET $DC_STATUS', returnStdout: true).trim()
+                    if(isupdate.equals("Y")){
+                        sh '$OC login -u$OCP_USER_NAME -p$OCP_PWD --server=$OCP_SERVER --certificate-authority=$OCP_CERT_PATH'
+                        sh '$OC project ${PRO_NAME}'
+                        sh '$OC set route-backends ${BASE_ROUTE} service-a=100 ${APP_NAME}=0'
+                        sh '$OC rollout latest dc/${APP_NAME} -n ${PRO_NAME}'
+                        sh '$OC rollout status dc/${APP_NAME}'
+                        sh '$OC set route-backends ${BASE_ROUTE} service-a=50 ${APP_NAME}=50'
+                    }
+                }
+            }
+        }
+    }
+    post { 
+        success{ 
+            script{
+                def isupdate = sh (script: '$REDIS_CLI -h $REDIS_HOST GET $DC_STATUS', returnStdout: true).trim()
+                if(isupdate.equals("Y")){
+                    sh '$REDIS_CLI -h $REDIS_HOST SET $DC_STATUS N'
+                    //sh 'echo sucessed'
+                    slackSend (color: '#33ff36', message: "Sucessed built: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]\nView Report: (${env.BUILD_URL})\nTest URL: (http://${APP_NAME}-${IMG_NAME}.apps.$OCP_BASE_URL/ui)'")
+                }
+            }
+        }
+        failure {
+          //sh 'echo fail'
+          slackSend (color: '#33ff36', message: "Failed build:: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]\nView Report: (${env.BUILD_URL})'")
+        }
+    }
+}
